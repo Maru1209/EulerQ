@@ -81,7 +81,7 @@ export default function Home() {
 {/* Pilot CTA */}
 <section id="pilot" className="mx-auto max-w-7xl px-4 py-16">
   <div className="rounded-3xl border border-emerald-400/30 bg-emerald-500/10 p-8 md:p-12">
-    <h2 className="text-2xl md:text-3xl font-bold">Run a 4-week Bengaluru pilot</h2>
+    <h2 className="text-2xl md:text-3xl font-bold">Run a 4-week pilot</h2>
     <p className="mt-3 text-slate-200 max-w-2xl">
       Scope: 2 depots · 20–50 vehicles · 1–2k stops/day · VRP-TW, returns, and shift optimization.
       Success = −8–12% km/stop, −10–20% lateness, +3–5% drops/vehicle.
