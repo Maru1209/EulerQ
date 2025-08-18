@@ -165,6 +165,9 @@ export default function Home() {
               <li><span className="text-slate-400">Focus:</span> AI + Quantum Optimization for Logistics</li>
               <li><span className="text-slate-400">HQ:</span> India (Bengaluru / Chennai)</li>
               <li><span className="text-slate-400">Email:</span> contact@eulerq.com</li>
+               <li><span className="text-slate-400">Phone:</span> 
+    <a href="tel:+917204025576 " className="underline hover:text-emerald-400">+91-7204025576 </a>
+  </li>
             </ul>
             <div className="mt-6 text-sm text-slate-400">
               With the blessings of Kanakanpatti Sidhar Aiyya Palani Swami, we are committed to solving India’s logistics inefficiencies with science and service.
