@@ -1,12 +1,15 @@
 "use client";
+
+import Link from "next/link";
+// Adjust this path if your component lives somewhere else:
+// - If at project root:   "../components/PilotCTA"
+// - If inside app/:       "./components/PilotCTA"
+// - If using @ alias:     "@/components/PilotCTA"
 import PilotCTA from "../components/PilotCTA";
 
 export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100">
-      {/* ... keep your navbar & hero ... */}
-
-      
       {/* Navbar */}
       <nav className="sticky top-0 z-40 backdrop-blur bg-black/20 border-b border-white/10">
         <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
@@ -16,13 +19,17 @@ export default function Home() {
             </div>
             <span className="text-xl font-semibold tracking-tight">EulerQ</span>
           </div>
+
           <div className="hidden md:flex items-center gap-6 text-sm text-slate-300">
             <a href="#problem" className="hover:text-white">Problem</a>
             <a href="#solution" className="hover:text-white">Solution</a>
             <a href="#how" className="hover:text-white">How it works</a>
             <a href="#pilot" className="hover:text-white">Pilot</a>
             <a href="#contact" className="hover:text-white">Contact</a>
+            {/* Link to your live POC */}
+            <Link href="/optimizer-demo" className="hover:text-white">Route Optimizer (POC)</Link>
           </div>
+
           <a href="#contact" className="rounded-xl px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold shadow">
             Talk to us
           </a>
@@ -58,6 +65,7 @@ export default function Home() {
               ))}
             </div>
           </div>
+
           <div className="relative">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-2xl">
               <div className="rounded-xl bg-black p-4">
@@ -78,20 +86,20 @@ export default function Home() {
         </div>
       </section>
 
-{/* Pilot CTA */}
-<section id="pilot" className="mx-auto max-w-7xl px-4 py-16">
-  <div className="rounded-3xl border border-emerald-400/30 bg-emerald-500/10 p-8 md:p-12">
-    <h2 className="text-2xl md:text-3xl font-bold">Run a 4-week pilot</h2>
-    <p className="mt-3 text-slate-200 max-w-2xl">
-      Scope: 2 depots · 20–50 vehicles · 1–2k stops/day · VRP-TW, returns, and shift optimization.
-      Success = −8–12% km/stop, −10–20% lateness, +3–5% drops/vehicle.
-    </p>
-    <div className="mt-6">
-      <PilotCTA />
-    </div>
-  </div>
-</section>
- 
+      {/* Pilot CTA */}
+      <section id="pilot" className="mx-auto max-w-7xl px-4 py-16">
+        <div className="rounded-3xl border border-emerald-400/30 bg-emerald-500/10 p-8 md:p-12">
+          <h2 className="text-2xl md:text-3xl font-bold">Run a 4-week pilot</h2>
+          <p className="mt-3 text-slate-200 max-w-2xl">
+            Scope: 2 depots · 20–50 vehicles · 1–2k stops/day · VRP-TW, returns, and shift optimization.
+            Success = −8–12% km/stop, −10–20% lateness, +3–5% drops/vehicle.
+          </p>
+          <div className="mt-6">
+            <PilotCTA />
+          </div>
+        </div>
+      </section>
+
       {/* Problem */}
       <section id="problem" className="mx-auto max-w-7xl px-4 py-16">
         <h2 className="text-2xl md:text-3xl font-bold">The problem we tackle</h2>
@@ -160,9 +168,14 @@ export default function Home() {
               <label className="block text-sm text-slate-300">Message</label>
               <textarea rows={4} className="mt-1 w-full rounded-xl bg-black/40 border border-white/10 px-3 py-2" placeholder="Tell us about your routes, depots, and goals…" />
             </div>
-            <button className="rounded-xl px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold">Send (opens email)</button>
-            <p className="text-xs text-slate-400">Or email us at <a href="mailto:contact@eulerq.com" className="underline">contact@eulerq.com</a></p>
+            <button className="rounded-xl px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold">
+              Send (opens email)
+            </button>
+            <p className="text-xs text-slate-400">
+              Or email us at <a href="mailto:contact@eulerq.com" className="underline">contact@eulerq.com</a>
+            </p>
           </form>
+
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
             <h3 className="font-semibold text-lg">Company details</h3>
             <ul className="mt-3 space-y-2 text-slate-300 text-sm">
@@ -170,9 +183,10 @@ export default function Home() {
               <li><span className="text-slate-400">Focus:</span> AI + Quantum Optimization for Logistics</li>
               <li><span className="text-slate-400">HQ:</span> India (Bengaluru / Chennai)</li>
               <li><span className="text-slate-400">Email:</span> contact@eulerq.com</li>
-               <li><span className="text-slate-400">Phone:</span> 
-    <a href="tel:+917204025576 " className="underline hover:text-emerald-400">+91-7204025576 </a>
-  </li>
+              <li>
+                <span className="text-slate-400">Phone:</span>{" "}
+                <a href="tel:+917204025576" className="underline hover:text-emerald-400">+91-7204025576</a>
+              </li>
             </ul>
             <div className="mt-6 text-sm text-slate-400">
               With the blessings of Kanakanpatti Sidhar Aiyya Palani Swami, we are committed to solving India’s logistics inefficiencies with science and service.
@@ -195,4 +209,3 @@ export default function Home() {
     </main>
   );
 }
-
