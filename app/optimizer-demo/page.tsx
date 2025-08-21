@@ -3,20 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import "leaflet/dist/leaflet.css";
 
 type Point = { lat: number; lng: number };
-
-type WarehouseKey =
-  | "Hoskote"
-  | "Bellandur"
-  | "Whitefield"
-  | "Peenya"
-  | "Yelahanka";
+type WarehouseKey = "Hoskote" | "Bellandur" | "Whitefield" | "Peenya" | "Yelahanka";
 
 // Preset warehouse city coordinates (approx)
-const WAREHOUSES: Record<WarehouseKey, { lat: number; lng: number }> = {
-  Hoskote: { lat: 13.0700, lng: 77.8000 },
+const WAREHOUSES: Record<WarehouseKey, Point> = {
+  Hoskote: { lat: 13.07, lng: 77.8 },
   Bellandur: { lat: 12.9289, lng: 77.6762 },
   Whitefield: { lat: 12.9698, lng: 77.7499 },
-  Peenya: { lat: 13.0275, lng: 77.5150 },
+  Peenya: { lat: 13.0275, lng: 77.515 },
   Yelahanka: { lat: 13.1007, lng: 77.5963 },
 };
 
@@ -28,11 +22,13 @@ export default function OptimizerDemo() {
 
   // UI state
   const [startWh, setStartWh] = useState<WarehouseKey>("Bellandur");
-  const [endWh, setEndWh] = useState<WarehouseKey | "Same as Start">(
-    "Same as Start"
-  );
+  const [endWh, setEndWh] = useState<WarehouseKey | "Same as Start">("Same as Start");
   const [roundTrip, setRoundTrip] = useState<boolean>(true);
   const [numPoints, setNumPoints] = useState<number>(8); // 5–12
+  const [showCompare, setShowCompare] = useState<boolean>(true);
+
+  // Optional: override Start with geolocation
+  const [startOverride, setStartOverride] = useState<Point | null>(null);
 
   // react-leaflet (client-only)
   const [leaflet, setLeaflet] = useState<any>(null);
@@ -60,12 +56,17 @@ export default function OptimizerDemo() {
     if (endWh === "Same as Start") setRoundTrip(true);
   }, [endWh]);
 
-  const startDepot = useMemo(() => WAREHOUSES[startWh], [startWh]);
-  const endDepot = useMemo(() => {
-    if (endWh === "Same as Start") return WAREHOUSES[startWh];
+  // Effective depots (with possible geolocation override for start)
+  const startDepot: Point = useMemo(
+    () => startOverride ?? WAREHOUSES[startWh],
+    [startOverride, startWh]
+  );
+  const endDepot: Point = useMemo(() => {
+    if (endWh === "Same as Start") return startDepot;
     return WAREHOUSES[endWh as WarehouseKey];
-  }, [endWh, startWh]);
+  }, [endWh, startDepot]);
 
+  // Random sellers around the start depot (8–12 km)
   function randInRadiusKm(center: Point, minKm = 8, maxKm = 12): Point {
     // Rough conversion near Bengaluru: 1° lat ~ 111km, 1° lng ~ 111km * cos(lat)
     const km = minKm + Math.random() * (maxKm - minKm);
@@ -78,10 +79,7 @@ export default function OptimizerDemo() {
 
   function handleGenerate() {
     const N = Math.min(12, Math.max(5, numPoints));
-    // Generate seller pick-ups around START warehouse
-    const pts: Point[] = Array.from({ length: N }, () =>
-      randInRadiusKm(startDepot, 8, 12)
-    );
+    const pts: Point[] = Array.from({ length: N }, () => randInRadiusKm(startDepot, 8, 12));
     setPoints(pts);
     setResult(null);
     setError(null);
@@ -91,9 +89,9 @@ export default function OptimizerDemo() {
     const payload: any = {
       points,
       round_trip: endWh === "Same as Start" ? true : roundTrip,
-      start: startDepot, // always send start depot
+      start: startDepot, // always include start
     };
-    if (endWh !== "Same as Start") payload.end = endDepot; // open tour if different
+    if (endWh !== "Same as Start") payload.end = endDepot;
     return payload;
   }
 
@@ -129,7 +127,24 @@ export default function OptimizerDemo() {
     }
   }
 
-  // Polyline through seller points (and visually close if pure round-trip without external depots)
+  // 📍 Use browser geolocation to set start override
+  function handleUseMyLocation() {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setStartOverride({ lat: latitude, lng: longitude });
+      },
+      (err) => {
+        alert("Could not get location: " + err.message);
+      }
+    );
+  }
+
+  // Polyline through seller sequence (and close if pure round trip with no external end)
   const routePositions: [number, number][] =
     result?.ok && Array.isArray(result.solution?.order)
       ? (() => {
@@ -141,23 +156,22 @@ export default function OptimizerDemo() {
             result?.diagnostics?.depots?.has_end;
           const isRoundTripFinal =
             endWh === "Same as Start" ? true : !!result?.diagnostics?.round_trip;
-          return isRoundTripFinal && !depotsUsed && seq.length > 1
-            ? [...seq, seq[0]]
-            : seq;
+          return isRoundTripFinal && !depotsUsed && seq.length > 1 ? [...seq, seq[0]] : seq;
         })()
       : [];
 
+  // Map focus on start depot
   const mapCenter: [number, number] = [startDepot.lat, startDepot.lng];
 
   return (
     <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 12 }}>EulerQ Route Optimizer (POC)</h1>
 
-      {/* --- SETTINGS BAR --- */}
+      {/* SETTINGS BAR */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(260px,1fr))",
           gap: 12,
           marginBottom: 12,
           padding: 12,
@@ -166,14 +180,17 @@ export default function OptimizerDemo() {
           background: "#fafafa",
         }}
       >
-        {/* Start WH */}
+        {/* Start WH + My Location */}
         <div>
           <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
             Start Warehouse (City)
           </label>
           <select
             value={startWh}
-            onChange={(e) => setStartWh(e.target.value as WarehouseKey)}
+            onChange={(e) => {
+              setStartWh(e.target.value as WarehouseKey);
+              setStartOverride(null); // clear custom override when switching
+            }}
             style={{ width: "100%", padding: 8 }}
           >
             {Object.keys(WAREHOUSES).map((k) => (
@@ -183,8 +200,23 @@ export default function OptimizerDemo() {
             ))}
           </select>
           <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
-            Lat/Lng: {startDepot.lat.toFixed(4)}, {startDepot.lng.toFixed(4)}
+            Lat/Lng: {startDepot.lat.toFixed(4)}, {startDepot.lng.toFixed(4)}{" "}
+            {startOverride && <em>(custom)</em>}
           </div>
+          <button
+            type="button"
+            onClick={handleUseMyLocation}
+            style={{
+              marginTop: 6,
+              padding: "6px 10px",
+              fontSize: 13,
+              background: "#e5e7eb",
+              border: "1px solid #ccc",
+              borderRadius: 4,
+            }}
+          >
+            📍 Use My Location as Start
+          </button>
         </div>
 
         {/* End WH */}
@@ -194,9 +226,7 @@ export default function OptimizerDemo() {
           </label>
           <select
             value={endWh}
-            onChange={(e) =>
-              setEndWh(e.target.value as WarehouseKey | "Same as Start")
-            }
+            onChange={(e) => setEndWh(e.target.value as WarehouseKey | "Same as Start")}
             style={{ width: "100%", padding: 8 }}
           >
             <option>Same as Start</option>
@@ -213,7 +243,7 @@ export default function OptimizerDemo() {
           </div>
         </div>
 
-        {/* Round trip (only if End != Same as Start) */}
+        {/* Round trip */}
         <div>
           <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
             Round trip
@@ -229,7 +259,7 @@ export default function OptimizerDemo() {
               {endWh === "Same as Start"
                 ? "Forced ON (returns to Start)"
                 : roundTrip
-                ? "Return to End OFF (cities wrap)"
+                ? "Wrap cities (no external end)"
                 : "Open tour (Start→...→End)"}
             </span>
           </label>
@@ -258,6 +288,18 @@ export default function OptimizerDemo() {
           />
         </div>
 
+        {/* Compare toggle */}
+        <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={showCompare}
+              onChange={(e) => setShowCompare(e.target.checked)}
+            />
+            <span>Compare QUBO vs. Greedy baseline</span>
+          </label>
+        </div>
+
         {/* Buttons */}
         <div style={{ display: "flex", alignItems: "end", gap: 10 }}>
           <button onClick={handleGenerate} style={{ padding: "8px 14px" }}>
@@ -271,7 +313,7 @@ export default function OptimizerDemo() {
             {busy ? "⏳ Optimizing..." : "⚙️ Optimize"}
           </button>
           <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.8 }}>
-            API: {process.env.NEXT_PUBLIC_API_BASE || "(dev proxy)"}
+            API: {process.env.NEXT_PUBLIC_API_BASE || "(dev proxy)"} 
           </div>
         </div>
       </div>
@@ -279,7 +321,8 @@ export default function OptimizerDemo() {
       {/* Info */}
       {points.length > 0 && (
         <div style={{ marginBottom: 10 }}>
-          <b>Generated sellers:</b> {points.length} around {startWh}
+          <b>Generated sellers:</b> {points.length} around{" "}
+          {startOverride ? "custom start" : startWh}
         </div>
       )}
       {error && (
@@ -288,82 +331,127 @@ export default function OptimizerDemo() {
         </div>
       )}
 
+      {/* Results */}
       {result?.ok && (
         <div style={{ marginTop: 12 }}>
           <div>
-            <b>Distance:</b>{" "}
-            {Number(result.solution.distance_km).toFixed(2)} km
-          </div>
-          <div>
             <b>Order:</b> {result.solution.order.join(" → ")}
           </div>
-          {typeof result.solution.improvement_pct === "number" && (
-            <div>
-              <b>Improvement vs baseline:</b>{" "}
-              {result.solution.improvement_pct.toFixed(1)}%
-            </div>
-          )}
-          {result?.diagnostics?.depots?.start_end_km != null && (
-            <div>
-              <b>Start ↔ End distance:</b>{" "}
-              {Number(result.diagnostics.depots.start_end_km).toFixed(2)} km
-            </div>
-          )}
 
-          {/* QUBO / Solver info */}
-          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
-            <b>Solver Info:</b> We formulate the route as a <b>QUBO</b> and use
-            simulated annealing to minimize the energy xᵀQx. Constraints (visit
-            each seller once, fill positions) and distances are encoded inside Q.
-            <div style={{ marginTop: 6 }}>
-              QUBO terms: L=
-              {result?.diagnostics?.qubo_terms?.linear_terms_added ?? 0}, Q=
-              {result?.diagnostics?.qubo_terms?.quadratic_terms_added ?? 0}. ·
-              Restarts={result?.diagnostics?.restarts}, Reads/Restart=
-              {result?.diagnostics?.reads_per_restart}, Best Restart=
-              {result?.diagnostics?.best_restart_idx}
-            </div>
+          {/* Preferred metric: total distance including depot legs */}
+          <div>
+            <b>Distance (QUBO):</b>{" "}
+            {Number(result.solution.distance_km).toFixed(2)} km
           </div>
 
-          {/* Map */}
-          {leaflet && (
-            <div style={{ height: 460, marginTop: 14 }}>
-              <leaflet.MapContainer
-                center={mapCenter}
-                zoom={12}
-                style={{ height: "100%", width: "100%" }}
-              >
-                <leaflet.TileLayer
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  attribution="© OpenStreetMap contributors"
-                />
+          {showCompare && (
+            <>
+              <div>
+                <b>Baseline (greedy):</b>{" "}
+                {Number(result.solution.baseline_km).toFixed(2)} km
+              </div>
+              <div>
+                <b>Improvement vs baseline:</b>{" "}
+                {Number(result.solution.improvement_pct).toFixed(1)}%
+              </div>
 
-                {/* Polyline through seller sequence */}
-                {Array.isArray(result.solution.order) && (
-                  <leaflet.Polyline positions={routePositions} />
-                )}
-
-                {/* Sellers */}
-                {points.map((p, idx) => (
-                  <leaflet.Marker key={idx} position={[p.lat, p.lng]}>
-                    <leaflet.Popup>
-                      Seller #{idx} — {p.lat.toFixed(4)}, {p.lng.toFixed(4)}
-                    </leaflet.Popup>
-                  </leaflet.Marker>
-                ))}
-
-                {/* Depots */}
-                <leaflet.Marker position={[startDepot.lat, startDepot.lng]}>
-                  <leaflet.Popup>Start Warehouse — {startWh}</leaflet.Popup>
-                </leaflet.Marker>
-                {endWh !== "Same as Start" && (
-                  <leaflet.Marker position={[endDepot.lat, endDepot.lng]}>
-                    <leaflet.Popup>End Warehouse — {endWh}</leaflet.Popup>
-                  </leaflet.Marker>
-                )}
-              </leaflet.MapContainer>
-            </div>
+              {/* Tiny bar compare (lower is better) */}
+              <div style={{ marginTop: 8, maxWidth: 480 }}>
+                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
+                  Lower is better
+                </div>
+                {(() => {
+                  const q = Math.max(0.001, Number(result.solution.distance_km));
+                  const b = Math.max(0.001, Number(result.solution.baseline_km));
+                  const max = Math.max(q, b);
+                  const qw = Math.round((q / max) * 100);
+                  const bw = Math.round((b / max) * 100);
+                  return (
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div>
+                        <div style={{ fontSize: 12 }}>QUBO</div>
+                        <div style={{ background: "#e5e7eb", height: 8, borderRadius: 4 }}>
+                          <div
+                            style={{
+                              width: `${qw}%`,
+                              height: 8,
+                              borderRadius: 4,
+                              background: "#10b981",
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12 }}>Greedy</div>
+                        <div style={{ background: "#e5e7eb", height: 8, borderRadius: 4 }}>
+                          <div
+                            style={{
+                              width: `${bw}%`,
+                              height: 8,
+                              borderRadius: 4,
+                              background: "#3b82f6",
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </>
           )}
+
+          {/* Solver details */}
+          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
+            <b>Solver Info:</b> QUBO (minimize xᵀQx) solved via simulated annealing.
+            Terms added: L={result?.diagnostics?.qubo_terms?.linear_terms_added ?? 0}, Q=
+            {result?.diagnostics?.qubo_terms?.quadratic_terms_added ?? 0}. · Restarts=
+            {result?.diagnostics?.restarts}, Reads/Restart=
+            {result?.diagnostics?.reads_per_restart}, Best Restart=
+            {result?.diagnostics?.best_restart_idx}
+          </div>
+        </div>
+      )}
+
+      {/* Map */}
+      {leaflet && (points.length > 0 || result?.ok) && (
+        <div style={{ height: 460, marginTop: 14 }}>
+          <leaflet.MapContainer
+            center={mapCenter}
+            zoom={12}
+            style={{ height: "100%", width: "100%" }}
+          >
+            <leaflet.TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution="© OpenStreetMap contributors"
+            />
+
+            {/* Polyline through seller sequence */}
+            {Array.isArray(result?.solution?.order) && (
+              <leaflet.Polyline positions={routePositions} />
+            )}
+
+            {/* Seller markers */}
+            {points.map((p, idx) => (
+              <leaflet.Marker key={idx} position={[p.lat, p.lng]}>
+                <leaflet.Popup>
+                  Seller #{idx} — {p.lat.toFixed(4)}, {p.lng.toFixed(4)}
+                </leaflet.Popup>
+              </leaflet.Marker>
+            ))}
+
+            {/* Depots */}
+            <leaflet.Marker position={[startDepot.lat, startDepot.lng]}>
+              <leaflet.Popup>
+                Start Warehouse — {startOverride ? "Custom" : startWh}
+              </leaflet.Popup>
+            </leaflet.Marker>
+            {endWh !== "Same as Start" && (
+              <leaflet.Marker position={[endDepot.lat, endDepot.lng]}>
+                <leaflet.Popup>End Warehouse — {endWh}</leaflet.Popup>
+              </leaflet.Marker>
+            )}
+          </leaflet.MapContainer>
         </div>
       )}
     </div>
