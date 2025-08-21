@@ -10,18 +10,21 @@ export default function OptimizerDemo() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // NEW: UI state
+  // UI state
   const [roundTrip, setRoundTrip] = useState<boolean>(true);
   const [numPoints, setNumPoints] = useState<number>(8); // 5–12
+  const [startLat, setStartLat] = useState<string>("");
+  const [startLng, setStartLng] = useState<string>("");
+  const [endLat, setEndLat] = useState<string>("");
+  const [endLng, setEndLng] = useState<string>("");
 
-  // react-leaflet loaded only in the browser (Option B)
+  // react-leaflet (client-only)
   const [leaflet, setLeaflet] = useState<any>(null);
   useEffect(() => {
     (async () => {
       const mod = await import("react-leaflet");
       const L = (await import("leaflet")).default;
-
-      // Fix default marker icons in Next.js
+      // fix marker icons
       // @ts-ignore
       delete (L.Icon.Default.prototype as any)._getIconUrl;
       L.Icon.Default.mergeOptions({
@@ -32,13 +35,12 @@ export default function OptimizerDemo() {
         shadowUrl:
           "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
       });
-
       setLeaflet({ ...mod, L });
     })();
   }, []);
 
   function handleGenerate() {
-    const N = Math.min(12, Math.max(5, numPoints)); // clamp 5–12
+    const N = Math.min(12, Math.max(5, numPoints));
     const pts: Point[] = Array.from({ length: N }, () => ({
       lat: 12.9 + Math.random() * 0.15,
       lng: 77.5 + Math.random() * 0.15,
@@ -46,6 +48,21 @@ export default function OptimizerDemo() {
     setPoints(pts);
     setResult(null);
     setError(null);
+  }
+
+  function buildPayload() {
+    const payload: any = { points, round_trip: roundTrip };
+    const sOK = startLat.trim() !== "" && startLng.trim() !== "";
+    const eOK = endLat.trim() !== "" && endLng.trim() !== "";
+
+    if (sOK) {
+      payload.start = { lat: parseFloat(startLat), lng: parseFloat(startLng) };
+    }
+    if (eOK) {
+      payload.end = { lat: parseFloat(endLat), lng: parseFloat(endLng) };
+    }
+    // If round_trip and only start provided, backend will use start as end as well.
+    return payload;
   }
 
   async function handleOptimize() {
@@ -64,7 +81,7 @@ export default function OptimizerDemo() {
         body: JSON.stringify({
           problem_type: "route",
           backend: "classical",
-          payload: { points, round_trip: roundTrip },
+          payload: buildPayload(),
         }),
       });
 
@@ -75,7 +92,6 @@ export default function OptimizerDemo() {
           `HTTP ${res.status} ${res.statusText} — check Network tab`;
         throw new Error(msg);
       }
-
       setResult(data);
     } catch (e: any) {
       console.error(e);
@@ -86,30 +102,45 @@ export default function OptimizerDemo() {
     }
   }
 
-  // Build polyline positions; if roundTrip, close the loop
+  // Build polyline (close if roundTrip with no external depots shown here)
   const routePositions: [number, number][] =
-    result?.ok && Array.isArray(result.solution.order)
+    result?.ok && Array.isArray(result.solution?.order)
       ? (() => {
           const seq = result.solution.order.map(
             (i: number) => [points[i].lat, points[i].lng] as [number, number]
           );
-          return roundTrip && seq.length > 1 ? [...seq, seq[0]] : seq;
+          // We don't close visually if external depots used; we draw depots separately.
+          const depotsUsed =
+            result?.diagnostics?.depots?.has_start ||
+            result?.diagnostics?.depots?.has_end;
+          return roundTrip && !depotsUsed && seq.length > 1 ? [...seq, seq[0]] : seq;
         })()
       : [];
 
+  const startMarker =
+    startLat && startLng
+      ? ([parseFloat(startLat), parseFloat(startLng)] as [number, number])
+      : null;
+  const endMarker =
+    endLat && endLng
+      ? ([parseFloat(endLat), parseFloat(endLng)] as [number, number])
+      : startMarker && roundTrip
+      ? startMarker
+      : null;
+
   return (
     <div style={{ padding: 20 }}>
-      <h1>Eulerq Route Optimizer (POC)</h1>
+      <h1>EulerQ Route Optimizer (POC)</h1>
 
       {/* Controls */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(200px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))",
           gap: 12,
           marginTop: 8,
           alignItems: "center",
-          maxWidth: 800,
+          maxWidth: 1000,
         }}
       >
         <div>
@@ -124,7 +155,6 @@ export default function OptimizerDemo() {
             onChange={(e) => setNumPoints(parseInt(e.target.value || "8", 10))}
             style={{ padding: 8, width: "100%" }}
           />
-          {/* Optional: slider control */}
           <input
             type="range"
             min={5}
@@ -147,6 +177,49 @@ export default function OptimizerDemo() {
             />
             <span>{roundTrip ? "Return to start enabled" : "Open tour"}</span>
           </label>
+        </div>
+
+        <div>
+          <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
+            Start (lat, lng)
+          </label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              placeholder="12.95"
+              value={startLat}
+              onChange={(e) => setStartLat(e.target.value)}
+              style={{ padding: 8, width: "100%" }}
+            />
+            <input
+              placeholder="77.60"
+              value={startLng}
+              onChange={(e) => setStartLng(e.target.value)}
+              style={{ padding: 8, width: "100%" }}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
+            End (lat, lng)
+          </label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              placeholder="12.96"
+              value={endLat}
+              onChange={(e) => setEndLat(e.target.value)}
+              style={{ padding: 8, width: "100%" }}
+            />
+            <input
+              placeholder="77.62"
+              value={endLng}
+              onChange={(e) => setEndLng(e.target.value)}
+              style={{ padding: 8, width: "100%" }}
+            />
+          </div>
+          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+            Leave End blank to auto-close to Start if Round trip is enabled.
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 12, alignItems: "end" }}>
@@ -184,9 +257,36 @@ export default function OptimizerDemo() {
               {result.solution.improvement_pct.toFixed(1)}%
             </div>
           )}
+          {result?.diagnostics?.depots?.start_end_km != null && (
+            <div>
+              <b>Start↔End distance:</b>{" "}
+              {Number(result.diagnostics.depots.start_end_km).toFixed(2)} km
+            </div>
+          )}
 
-          {/* Map (only when leaflet is loaded in the browser) */}
-          {leaflet && points.length > 0 && routePositions.length > 0 && (
+          {/* QUBO / Solver info */}
+          <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
+            <b>Solver Info:</b>
+            <div>
+              We formulate the route as a <b>QUBO</b> (quadratic unconstrained
+              binary optimization): variables x<sub>i,t</sub> decide city <i>i</i> at position <i>t</i>.
+              Constraints (visit once / slot filled) and distances are encoded
+              into a single matrix <i>Q</i>. We then use simulated annealing to
+              minimize xᵀQx, which is different from “just annealing” a cost:
+              here the cost landscape comes explicitly from the QUBO.
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <i>QUBO terms added:</i>{" "}
+              L={result?.diagnostics?.qubo_terms?.linear_terms_added ?? 0},{" "}
+              Q={result?.diagnostics?.qubo_terms?.quadratic_terms_added ?? 0}.{" "}
+              Restarts={result?.diagnostics?.restarts}, Reads/Restart=
+              {result?.diagnostics?.reads_per_restart}, Best Restart=
+              {result?.diagnostics?.best_restart_idx}.
+            </div>
+          </div>
+
+          {/* Map */}
+          {leaflet && points.length > 0 && (
             <div style={{ height: 420, marginTop: 16 }}>
               <leaflet.MapContainer
                 center={[points[0].lat, points[0].lng]}
@@ -197,16 +297,31 @@ export default function OptimizerDemo() {
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                   attribution="© OpenStreetMap contributors"
                 />
-                {/* Optimized route polyline (closed if roundTrip) */}
-                <leaflet.Polyline positions={routePositions} />
-                {/* Markers */}
+                {/* Optimized route polyline */}
+                {Array.isArray(result.solution.order) && (
+                  <leaflet.Polyline
+                    positions={routePositions}
+                  />
+                )}
+                {/* City markers */}
                 {points.map((p, idx) => (
                   <leaflet.Marker key={idx} position={[p.lat, p.lng]}>
                     <leaflet.Popup>
-                      #{idx} — {p.lat.toFixed(4)}, {p.lng.toFixed(4)}
+                      Stop #{idx} — {p.lat.toFixed(4)}, {p.lng.toFixed(4)}
                     </leaflet.Popup>
                   </leaflet.Marker>
                 ))}
+                {/* Depot markers */}
+                {startMarker && (
+                  <leaflet.Marker position={startMarker}>
+                    <leaflet.Popup>Start Depot</leaflet.Popup>
+                  </leaflet.Marker>
+                )}
+                {endMarker && endMarker !== startMarker && (
+                  <leaflet.Marker position={endMarker}>
+                    <leaflet.Popup>End Depot</leaflet.Popup>
+                  </leaflet.Marker>
+                )}
               </leaflet.MapContainer>
             </div>
           )}
