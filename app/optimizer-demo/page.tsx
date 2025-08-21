@@ -144,24 +144,46 @@ export default function OptimizerDemo() {
     );
   }
 
-  // Polyline through seller sequence (and close if pure round trip with no external end)
-  const routePositions: [number, number][] =
-    result?.ok && Array.isArray(result.solution?.order)
-      ? (() => {
-          const seq = result.solution.order.map(
-            (i: number) => [points[i].lat, points[i].lng] as [number, number]
-          );
-          const depotsUsed =
-            result?.diagnostics?.depots?.has_start ||
-            result?.diagnostics?.depots?.has_end;
-          const isRoundTripFinal =
-            endWh === "Same as Start" ? true : !!result?.diagnostics?.round_trip;
-          return isRoundTripFinal && !depotsUsed && seq.length > 1 ? [...seq, seq[0]] : seq;
-        })()
-      : [];
-
   // Map focus on start depot
   const mapCenter: [number, number] = [startDepot.lat, startDepot.lng];
+
+  // ✅ Build full path: Start → sellers (optimized order) → End/Start
+  const routePositions: [number, number][] = useMemo(() => {
+    if (!result?.ok || !Array.isArray(result.solution?.order) || points.length === 0) {
+      return [];
+    }
+
+    const seq = result.solution.order.map(
+      (i: number) => [points[i].lat, points[i].lng] as [number, number]
+    );
+
+    // In this UI we always send a start depot.
+    const hasStartDepot = true;
+    const hasEndDepot = endWh !== "Same as Start";
+    const mustReturnToStart = endWh === "Same as Start"; // enforced round-trip
+
+    const full: [number, number][] = [];
+
+    if (hasStartDepot) {
+      full.push([startDepot.lat, startDepot.lng]); // Start
+    }
+
+    // Sellers
+    full.push(...seq);
+
+    if (mustReturnToStart) {
+      // round-trip: go back to start depot
+      full.push([startDepot.lat, startDepot.lng]);
+    } else if (hasEndDepot) {
+      // open tour to explicit end depot
+      full.push([endDepot.lat, endDepot.lng]);
+    } else if (seq.length > 1 && result?.diagnostics?.round_trip) {
+      // no depots provided (unlikely here), wrap sellers
+      full.push(seq[0]);
+    }
+
+    return full;
+  }, [result, points, startDepot, endDepot, endWh]);
 
   return (
     <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
@@ -313,7 +335,7 @@ export default function OptimizerDemo() {
             {busy ? "⏳ Optimizing..." : "⚙️ Optimize"}
           </button>
           <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.8 }}>
-            API: {process.env.NEXT_PUBLIC_API_BASE || "(dev proxy)"} 
+            API: {process.env.NEXT_PUBLIC_API_BASE || "(dev proxy)"}
           </div>
         </div>
       </div>
@@ -401,6 +423,14 @@ export default function OptimizerDemo() {
             </>
           )}
 
+          {/* Optional straight Start–End diagnostic */}
+          {typeof result?.diagnostics?.depots?.start_end_km === "number" && (
+            <div style={{ marginTop: 6 }}>
+              <b>Straight Start–End:</b>{" "}
+              {result.diagnostics.depots.start_end_km.toFixed(2)} km
+            </div>
+          )}
+
           {/* Solver details */}
           <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
             <b>Solver Info:</b> QUBO (minimize xᵀQx) solved via simulated annealing.
@@ -426,8 +456,8 @@ export default function OptimizerDemo() {
               attribution="© OpenStreetMap contributors"
             />
 
-            {/* Polyline through seller sequence */}
-            {Array.isArray(result?.solution?.order) && (
+            {/* ✅ Polyline: Start → sellers → End/Start */}
+            {routePositions.length >= 2 && (
               <leaflet.Polyline positions={routePositions} />
             )}
 
