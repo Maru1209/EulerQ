@@ -1,10 +1,11 @@
-// next.config.mjs  (UTF-8)
+/** @type {import('next').NextConfig} */
 const nextConfig = {
   async rewrites() {
+    const API = process.env.NEXT_PUBLIC_API_BASE || 'https://web-production-810f8.up.railway.app';
     return [
-      { source: '/api/solve', destination: 'http://127.0.0.1:8080/api/solve' },
+      { source: '/api/:path*',      destination: `${API}/api/:path*` },
+      { source: '/optimize/:path*', destination: `${API}/optimize/:path*` },
     ];
   },
 };
-
 export default nextConfig;

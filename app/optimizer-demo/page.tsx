@@ -1,487 +1,560 @@
-"use client";
-import { useEffect, useMemo, useState } from "react";
-import "leaflet/dist/leaflet.css";
+'use client';
 
-type Point = { lat: number; lng: number };
-type WarehouseKey = "Hoskote" | "Bellandur" | "Whitefield" | "Peenya" | "Yelahanka";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 
-// Preset warehouse city coordinates (approx)
-const WAREHOUSES: Record<WarehouseKey, Point> = {
-  Hoskote: { lat: 13.07, lng: 77.8 },
-  Bellandur: { lat: 12.9289, lng: 77.6762 },
-  Whitefield: { lat: 12.9698, lng: 77.7499 },
-  Peenya: { lat: 13.0275, lng: 77.515 },
-  Yelahanka: { lat: 13.1007, lng: 77.5963 },
+// Lazy‑load react‑leaflet only on client to avoid SSR issues
+const Leaflet = {
+  MapContainer: dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false }),
+  TileLayer: dynamic(() => import('react-leaflet').then(m => m.TileLayer), { ssr: false }),
+  Marker: dynamic(() => import('react-leaflet').then(m => m.Marker), { ssr: false }),
+  Polyline: dynamic(() => import('react-leaflet').then(m => m.Polyline), { ssr: false }),
+  Popup: dynamic(() => import('react-leaflet').then(m => m.Popup), { ssr: false }),
 };
 
-export default function OptimizerDemo() {
-  const [points, setPoints] = useState<Point[]>([]);
-  const [result, setResult] = useState<any>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+import 'leaflet/dist/leaflet.css';
+// Avoid SSR "window is not defined" by requiring leaflet only on client
+let L: any = null;
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  L = require('leaflet');
+}
 
-  // UI state
-  const [startWh, setStartWh] = useState<WarehouseKey>("Bellandur");
-  const [endWh, setEndWh] = useState<WarehouseKey | "Same as Start">("Same as Start");
-  const [roundTrip, setRoundTrip] = useState<boolean>(true);
-  const [numPoints, setNumPoints] = useState<number>(8); // 5–12
-  const [showCompare, setShowCompare] = useState<boolean>(true);
+// --- Types
+export type LatLng = { lat: number; lng: number };
 
-  // Optional: override Start with geolocation
-  const [startOverride, setStartOverride] = useState<Point | null>(null);
+type RouteResult = {
+  order: number[];
+  distance_km: number | null; // null if invalid/unknown
+  label: string;
+};
 
-  // react-leaflet (client-only)
-  const [leaflet, setLeaflet] = useState<any>(null);
-  useEffect(() => {
-    (async () => {
-      const mod = await import("react-leaflet");
-      const L = (await import("leaflet")).default;
-      // fix marker icons
-      // @ts-ignore
-      delete (L.Icon.Default.prototype as any)._getIconUrl;
-      L.Icon.Default.mergeOptions({
-        iconRetinaUrl:
-          "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
-        iconUrl:
-          "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
-        shadowUrl:
-          "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
-      });
-      setLeaflet({ ...mod, L });
-    })();
-  }, []);
+// Predefined warehouses (15 entries)
+const WAREHOUSES: { name: string; lat: number; lng: number }[] = [
+  { name: 'Bellandur, Bengaluru', lat: 12.9289, lng: 77.6762 },
+  { name: 'Whitefield, Bengaluru', lat: 12.9698, lng: 77.7499 },
+  { name: 'Hebbal, Bengaluru', lat: 13.0355, lng: 77.5970 },
+  { name: 'Yeshwanthpur, Bengaluru', lat: 13.0237, lng: 77.5560 },
+  { name: 'Electronic City, Bengaluru', lat: 12.8398, lng: 77.6770 },
+  { name: 'Peenya, Bengaluru', lat: 13.0213, lng: 77.5185 },
+  { name: 'HSR Layout, Bengaluru', lat: 12.9106, lng: 77.6416 },
+  { name: 'Koramangala, Bengaluru', lat: 12.9352, lng: 77.6245 },
+  { name: 'Marathahalli, Bengaluru', lat: 12.955, lng: 77.701 },
+  { name: 'Kundalahalli, Bengaluru', lat: 12.969, lng: 77.716 },
+  { name: 'Banaswadi, Bengaluru', lat: 13.021, lng: 77.643 },
+  { name: 'Bommanahalli, Bengaluru', lat: 12.897, lng: 77.624 },
+  { name: 'MG Road, Bengaluru', lat: 12.974, lng: 77.607 },
+  { name: 'KR Puram, Bengaluru', lat: 13.0027, lng: 77.6956 },
+  { name: 'Rajajinagar, Bengaluru', lat: 12.9957, lng: 77.5546 },
+];
 
-  // If End = "Same as Start", enforce round trip
-  useEffect(() => {
-    if (endWh === "Same as Start") setRoundTrip(true);
-  }, [endWh]);
+// Backend API base
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000';
 
-  // Effective depots (with possible geolocation override for start)
-  const startDepot: Point = useMemo(
-    () => startOverride ?? WAREHOUSES[startWh],
-    [startOverride, startWh]
+// --- Helpers (geo & baseline)
+function haversine(a: LatLng, b: LatLng): number {
+  const R = 6371; // km
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function routeDistanceKm(start: LatLng, end: LatLng | null, pts: LatLng[], order: number[], roundTrip: boolean): number {
+  let total = 0;
+  let cur = start;
+  for (const idx of order) { total += haversine(cur, pts[idx]); cur = pts[idx]; }
+  if (roundTrip) total += haversine(cur, start); else if (end) total += haversine(cur, end);
+  return total;
+}
+
+function greedyRoute(start: LatLng, end: LatLng | null, pts: LatLng[]): number[] {
+  const N = pts.length; const unvis = new Set<number>(Array.from({ length: N }, (_, i) => i));
+  let cur = start; const order: number[] = [];
+  while (unvis.size) { let best = -1, bestD = Infinity; for (const i of unvis) { const d = haversine(cur, pts[i]); if (d < bestD) { bestD = d; best = i; } } order.push(best); unvis.delete(best); cur = pts[best]; }
+  return order;
+}
+
+// Time helpers
+const toHHMM = (minutes: number) => {
+  const h = Math.floor(minutes / 60), m = minutes % 60; return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+};
+const fromHHMM = (s: string | null | undefined) => {
+  if (!s) return null; const [h, m] = s.split(':').map(Number); if (Number.isNaN(h)) return null; return h*60 + (m || 0);
+};
+
+// --- UI helpers (module‑level so all components can use)
+function LabeledNumber({ label, value, onChange, step = 1, min, max }: { label: string; value: number; onChange: (n: number) => void; step?: number; min?: number; max?: number }) {
+  return (
+    <label className="text-sm grid gap-1">
+      <span className="text-xs text-foreground/70">{label}</span>
+      <input type="number" className="rounded-xl border px-3 py-2 text-sm" value={value} step={step} min={min} max={max} onChange={(e) => onChange(Number(e.target.value))} />
+    </label>
   );
-  const endDepot: Point = useMemo(() => {
-    if (endWh === "Same as Start") return startDepot;
-    return WAREHOUSES[endWh as WarehouseKey];
-  }, [endWh, startDepot]);
+}
 
-  // Random sellers around the start depot (8–12 km)
-  function randInRadiusKm(center: Point, minKm = 8, maxKm = 12): Point {
-    // Rough conversion near Bengaluru: 1° lat ~ 111km, 1° lng ~ 111km * cos(lat)
-    const km = minKm + Math.random() * (maxKm - minKm);
-    const bearing = Math.random() * 2 * Math.PI;
-    const dLat = (km * Math.cos(bearing)) / 111; // degrees
-    const dLng =
-      (km * Math.sin(bearing)) / (111 * Math.cos((center.lat * Math.PI) / 180));
-    return { lat: center.lat + dLat, lng: center.lng + dLng };
-  }
+function LabeledTime({ label, value, onChange }: { label: string; value: string; onChange: (s: string) => void }) {
+  return (
+    <label className="text-sm grid gap-1">
+      <span className="text-xs text-foreground/70">{label}</span>
+      <input type="time" className="rounded-xl border px-3 py-2 text-sm" value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
 
-  function handleGenerate() {
-    const N = Math.min(12, Math.max(5, numPoints));
-    const pts: Point[] = Array.from({ length: N }, () => randInRadiusKm(startDepot, 8, 12));
-    setPoints(pts);
-    setResult(null);
-    setError(null);
-  }
+function LabeledCoord({ label, value, onChange }: { label: string; value: number; onChange: (n: number) => void }) {
+  return <LabeledNumber label={label} value={value} onChange={onChange} step={0.0001} />;
+}
 
-  function buildPayload() {
-    const payload: any = {
-      points,
-      round_trip: endWh === "Same as Start" ? true : roundTrip,
-      start: startDepot, // always include start
-    };
-    if (endWh !== "Same as Start") payload.end = endDepot;
-    return payload;
-  }
+// Default marker icon (only on client)
+if (L) {
+  const defaultIcon = new L.Icon({
+    iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+    iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+    shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    iconSize: [25, 41], iconAnchor: [12, 41],
+  });
+  L.Marker.prototype.options.icon = defaultIcon;
+}
 
-  async function handleOptimize() {
+export default function OptimizerDemoPage() {
+  // --- UI State
+  const [activeTab, setActiveTab] = useState<'POC' | 'VRPTW'>('POC');
+  const [start, setStart] = useState<LatLng>({ lat: WAREHOUSES[7].lat, lng: WAREHOUSES[7].lng });
+  const [end, setEnd] = useState<LatLng | null>(null);
+  const [roundTrip, setRoundTrip] = useState(true);
+
+  // Dropdown selections for 15 warehouses
+  const [startIdx, setStartIdx] = useState<number>(7); // default Koramangala
+  const [endIdx, setEndIdx] = useState<number>(7);
+
+  const [sellerCount, setSellerCount] = useState(10);
+  const [sellers, setSellers] = useState<LatLng[]>([]);
+
+  const [reads, setReads] = useState<number>(2500); // JIJ reads
+  const [readsAuto, setReadsAuto] = useState<boolean>(true);
+  const [lambdaP, setLambdaP] = useState<number>(18); // QUBO penalty
+  const [lambdaAuto, setLambdaAuto] = useState<boolean>(true);
+  const [mode, setMode] = useState<'fast' | 'balanced' | 'quality'>('fast');
+
+  const [loadingGen, setLoadingGen] = useState(false);
+  const [loadingOpt, setLoadingOpt] = useState(false);
+
+  const [qubo, setQubo] = useState<RouteResult | null>(null);
+  const [greedy, setGreedy] = useState<RouteResult | null>(null);
+  const [naive, setNaive] = useState<RouteResult | null>(null);
+  const [jij, setJij] = useState<RouteResult | null>(null);
+
+  const [errQubo, setErrQubo] = useState<string>('');
+  const [errJij, setErrJij] = useState<string>('');
+
+  useEffect(() => { const s = WAREHOUSES[startIdx]; setStart({ lat: s.lat, lng: s.lng }); }, [startIdx]);
+  useEffect(() => { if (roundTrip) setEnd(null); else { const e = WAREHOUSES[endIdx]; setEnd({ lat: e.lat, lng: e.lng }); } }, [roundTrip, endIdx]);
+
+  // --- Actions
+  const generateSellers = useCallback(async () => {
+    setLoadingGen(true);
     try {
-      setBusy(true);
-      setError(null);
-      if (points.length < 5 || points.length > 12) {
-        throw new Error("Please generate 5–12 seller pick-ups before optimizing.");
-      }
-      const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-      const res = await fetch(`${API_BASE}/api/solve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          problem_type: "route",
-          backend: "classical",
-          payload: buildPayload(),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok === false) {
-        const msg = data?.message || `HTTP ${res.status} ${res.statusText}`;
-        throw new Error(msg);
-      }
-      setResult(data);
-    } catch (e: any) {
-      console.error(e);
-      setResult(null);
-      setError(e?.message || "Unknown error");
-    } finally {
-      setBusy(false);
-    }
-  }
+      const R = 0.04; // ~4-5km box
+      const pts: LatLng[] = Array.from({ length: sellerCount }, () => ({ lat: start.lat + (Math.random() * 2 - 1) * R, lng: start.lng + (Math.random() * 2 - 1) * R }));
+      setSellers(pts); setQubo(null); setJij(null); setGreedy(null); setNaive(null); setErrQubo(''); setErrJij('');
+    } finally { setLoadingGen(false); }
+  }, [sellerCount, start]);
 
-  // 📍 Use browser geolocation to set start override
-  function handleUseMyLocation() {
-    if (!navigator.geolocation) {
-      alert("Geolocation is not supported by your browser.");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setStartOverride({ lat: latitude, lng: longitude });
-      },
-      (err) => {
-        alert("Could not get location: " + err.message);
-      }
-    );
-  }
+  const optimize = useCallback(async () => {
+    if (!sellers.length) return; setLoadingOpt(true);
+    try {
+      setErrQubo(''); setErrJij('');
+      const naiveOrder = sellers.map((_, i) => i); const naiveDist = routeDistanceKm(start, end, sellers, naiveOrder, roundTrip); setNaive({ order: naiveOrder, distance_km: naiveDist, label: 'Naive' });
+      const greedyOrder = greedyRoute(start, end, sellers); const greedyDist = routeDistanceKm(start, end, sellers, greedyOrder, roundTrip); setGreedy({ order: greedyOrder, distance_km: greedyDist, label: 'Greedy' });
 
-  // Map focus on start depot
-  const mapCenter: [number, number] = [startDepot.lat, startDepot.lng];
+      // QUBO
+      try {
+        const body: any = { start, end: roundTrip ? null : end, points: sellers, round_trip: roundTrip };
+        if (!lambdaAuto) body.lambda = lambdaP;
+        const r = await fetch(`${API_BASE}/optimize/qubo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!r.ok) { setErrQubo(`QUBO HTTP ${r.status}`); setQubo(null); }
+        else {
+          const data = await r.json(); const order: number[] = Array.isArray(data.order) ? data.order : [];
+          if (!order.length) { setErrQubo('QUBO returned empty route'); setQubo(null); }
+          else { const dist = routeDistanceKm(start, end, sellers, order, roundTrip); setQubo({ order, distance_km: dist, label: 'QUBO' }); }
+        }
+      } catch { setErrQubo('QUBO request failed'); setQubo(null); }
 
-  // ✅ Build full path: Start → sellers (optimized order) → End/Start
-  const routePositions: [number, number][] = useMemo(() => {
-    if (!result?.ok || !Array.isArray(result.solution?.order) || points.length === 0) {
-      return [];
-    }
+      // JIJ
+      try {
+        const body: any = { points: sellers, round_trip: roundTrip, start, end: roundTrip ? null : end, lambda_mode: 'auto', penalty_factor: 3.0, mode, normalize_costs: true };
+        if (!readsAuto) body.num_reads = reads;
+        const r = await fetch(`${API_BASE}/optimize/jij`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!r.ok) { setErrJij(`JIJ HTTP ${r.status}`); setJij(null); }
+        else {
+          const data = await r.json(); const order: number[] = Array.isArray(data.order) ? data.order : (Array.isArray(data.route) ? data.route : []);
+          if (!order.length) { setErrJij('JIJ returned empty route'); setJij(null); }
+          else { const dist = routeDistanceKm(start, end, sellers, order, roundTrip); setJij({ order, distance_km: dist, label: 'JIJ' }); }
+        }
+      } catch { setErrJij('JIJ request failed'); setJij(null); }
+    } finally { setLoadingOpt(false); }
+  }, [sellers, start, end, roundTrip, lambdaP, reads, readsAuto, lambdaAuto, mode]);
 
-    const seq = result.solution.order.map(
-      (i: number) => [points[i].lat, points[i].lng] as [number, number]
-    );
+  // --- Map Paths (draw all in different shades)
+  const allPaths = useMemo(() => {
+    const build = (order?: number[] | null): [number, number][] => {
+      if (!order || order.length === 0) return [];
+      const pts: LatLng[] = [start, ...order.map(i => sellers[i])]; if (roundTrip) pts.push(start); else if (end) pts.push(end);
+      return pts.map(p => [p.lat, p.lng]) as [number, number][];
+    };
+    return { naive: build(naive?.order ?? null), greedy: build(greedy?.order ?? null), qubo: build(qubo?.order ?? null), jij: build(jij?.order ?? null) };
+  }, [start, end, roundTrip, sellers, naive, greedy, qubo, jij]);
 
-    // In this UI we always send a start depot.
-    const hasStartDepot = true;
-    const hasEndDepot = endWh !== "Same as Start";
-    const mustReturnToStart = endWh === "Same as Start"; // enforced round-trip
-
-    const full: [number, number][] = [];
-
-    if (hasStartDepot) {
-      full.push([startDepot.lat, startDepot.lng]); // Start
-    }
-
-    // Sellers
-    full.push(...seq);
-
-    if (mustReturnToStart) {
-      // round-trip: go back to start depot
-      full.push([startDepot.lat, startDepot.lng]);
-    } else if (hasEndDepot) {
-      // open tour to explicit end depot
-      full.push([endDepot.lat, endDepot.lng]);
-    } else if (seq.length > 1 && result?.diagnostics?.round_trip) {
-      // no depots provided (unlikely here), wrap sellers
-      full.push(seq[0]);
-    }
-
-    return full;
-  }, [result, points, startDepot, endDepot, endWh]);
+  // --- Derived: best vs baseline
+  const compareText = useMemo(() => {
+    if (!greedy) return '';
+    const candidates = [jij, qubo].filter(r => r && r.order.length > 0 && r.distance_km !== null) as RouteResult[];
+    if (!candidates.length) return '';
+    const best = candidates.reduce((a, b) => (a.distance_km! < b.distance_km! ? a : b));
+    const delta = greedy.distance_km! - best.distance_km!; const pct = (delta / greedy.distance_km!) * 100;
+    if (delta <= 0) return `${best.label} matched/beat Greedy by ~${pct.toFixed(1)}%`;
+    return `${best.label} saves ${delta.toFixed(2)} km (−${pct.toFixed(1)}%) vs Greedy`;
+  }, [greedy, jij, qubo]);
 
   return (
-    <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 12 }}>EulerQ Route Optimizer (POC)</h1>
+    <div className="p-4 md:p-6 grid gap-4">
+      <header className="flex items-center justify-between">
+        <h1 className="text-2xl md:text-3xl font-semibold">Optimizer Demo</h1>
+        <span className="text-xs">API: <code className="font-mono">{API_BASE}</code></span>
+      </header>
 
-      {/* SETTINGS BAR */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(260px,1fr))",
-          gap: 12,
-          marginBottom: 12,
-          padding: 12,
-          border: "1px solid #e5e7eb",
-          borderRadius: 8,
-          background: "#fafafa",
-        }}
-      >
-        {/* Start WH + My Location */}
-        <div>
-          <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-            Start Warehouse (City)
-          </label>
-          <select
-            value={startWh}
-            onChange={(e) => {
-              setStartWh(e.target.value as WarehouseKey);
-              setStartOverride(null); // clear custom override when switching
-            }}
-            style={{ width: "100%", padding: 8 }}
-          >
-            {Object.keys(WAREHOUSES).map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
-            Lat/Lng: {startDepot.lat.toFixed(4)}, {startDepot.lng.toFixed(4)}{" "}
-            {startOverride && <em>(custom)</em>}
-          </div>
-          <button
-            type="button"
-            onClick={handleUseMyLocation}
-            style={{
-              marginTop: 6,
-              padding: "6px 10px",
-              fontSize: 13,
-              background: "#e5e7eb",
-              border: "1px solid #ccc",
-              borderRadius: 4,
-            }}
-          >
-            📍 Use My Location as Start
-          </button>
-        </div>
-
-        {/* End WH */}
-        <div>
-          <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-            End Warehouse (City)
-          </label>
-          <select
-            value={endWh}
-            onChange={(e) => setEndWh(e.target.value as WarehouseKey | "Same as Start")}
-            style={{ width: "100%", padding: 8 }}
-          >
-            <option>Same as Start</option>
-            {Object.keys(WAREHOUSES).map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
-            {endWh === "Same as Start"
-              ? "Returns to Start"
-              : `Lat/Lng: ${endDepot.lat.toFixed(4)}, ${endDepot.lng.toFixed(4)}`}
-          </div>
-        </div>
-
-        {/* Round trip */}
-        <div>
-          <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-            Round trip
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={endWh === "Same as Start" ? true : roundTrip}
-              disabled={endWh === "Same as Start"}
-              onChange={(e) => setRoundTrip(e.target.checked)}
-            />
-            <span>
-              {endWh === "Same as Start"
-                ? "Forced ON (returns to Start)"
-                : roundTrip
-                ? "Wrap cities (no external end)"
-                : "Open tour (Start→...→End)"}
-            </span>
-          </label>
-        </div>
-
-        {/* Number of sellers */}
-        <div>
-          <label style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
-            Seller pick-ups (5–12)
-          </label>
-          <input
-            type="number"
-            min={5}
-            max={12}
-            value={numPoints}
-            onChange={(e) => setNumPoints(parseInt(e.target.value || "8", 10))}
-            style={{ padding: 8, width: "100%" }}
-          />
-          <input
-            type="range"
-            min={5}
-            max={12}
-            value={numPoints}
-            onChange={(e) => setNumPoints(parseInt(e.target.value, 10))}
-            style={{ width: "100%", marginTop: 6 }}
-          />
-        </div>
-
-        {/* Compare toggle */}
-        <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={showCompare}
-              onChange={(e) => setShowCompare(e.target.checked)}
-            />
-            <span>Compare QUBO vs. Greedy baseline</span>
-          </label>
-        </div>
-
-        {/* Buttons */}
-        <div style={{ display: "flex", alignItems: "end", gap: 10 }}>
-          <button onClick={handleGenerate} style={{ padding: "8px 14px" }}>
-            🧪 Generate Seller Pickups
-          </button>
-          <button
-            onClick={handleOptimize}
-            disabled={!points.length || busy}
-            style={{ padding: "8px 14px" }}
-          >
-            {busy ? "⏳ Optimizing..." : "⚙️ Optimize"}
-          </button>
-          <div style={{ marginLeft: "auto", fontSize: 12, opacity: 0.8 }}>
-            API: {process.env.NEXT_PUBLIC_API_BASE || "(dev proxy)"}
-          </div>
+      {/* Tabs */}
+      <div className="w-full">
+        <div className="inline-flex rounded-2xl border overflow-hidden">
+          <button className={`px-4 py-2 text-sm ${activeTab === 'POC' ? 'bg-foreground text-background' : ''}`} onClick={() => setActiveTab('POC')}>Route (POC)</button>
+          <button className={`px-4 py-2 text-sm ${activeTab === 'VRPTW' ? 'bg-foreground text-background' : ''}`} onClick={() => setActiveTab('VRPTW')}>VRPTW</button>
         </div>
       </div>
 
-      {/* Info */}
-      {points.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
-          <b>Generated sellers:</b> {points.length} around{" "}
-          {startOverride ? "custom start" : startWh}
-        </div>
-      )}
-      {error && (
-        <div style={{ marginTop: 8, color: "#ef4444" }}>
-          <b>Error:</b> {error}
-        </div>
-      )}
-
-      {/* Results */}
-      {result?.ok && (
-        <div style={{ marginTop: 12 }}>
-          <div>
-            <b>Order:</b> {result.solution.order.join(" → ")}
-          </div>
-
-          {/* Preferred metric: total distance including depot legs */}
-          <div>
-            <b>Distance (QUBO):</b>{" "}
-            {Number(result.solution.distance_km).toFixed(2)} km
-          </div>
-
-          {showCompare && (
-            <>
-              <div>
-                <b>Baseline (greedy):</b>{" "}
-                {Number(result.solution.baseline_km).toFixed(2)} km
+      {/* Controls */}
+      <section className="grid lg:grid-cols-[360px_1fr] gap-4">
+        <div className="grid gap-4">
+          <div className="rounded-2xl border p-4 grid gap-3">
+            <h2 className="font-medium">Start / End Warehouse</h2>
+            <div className="grid gap-3">
+              <label className="text-sm grid gap-1">
+                <span className="text-xs text-foreground/70">Start Warehouse</span>
+                <select className="rounded-xl border px-3 py-2 text-sm" value={startIdx} onChange={(e) => setStartIdx(Number(e.target.value))}>
+                  {WAREHOUSES.map((w, i) => (<option key={i} value={i}>{w.name}</option>))}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <LabeledCoord label="Start Lat" value={start.lat} onChange={(n) => setStart(s => ({ ...s, lat: n }))} />
+                <LabeledCoord label="Start Lng" value={start.lng} onChange={(n) => setStart(s => ({ ...s, lng: n }))} />
               </div>
-              <div>
-                <b>Improvement vs baseline:</b>{" "}
-                {Number(result.solution.improvement_pct).toFixed(1)}%
-              </div>
-
-              {/* Tiny bar compare (lower is better) */}
-              <div style={{ marginTop: 8, maxWidth: 480 }}>
-                <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
-                  Lower is better
-                </div>
-                {(() => {
-                  const q = Math.max(0.001, Number(result.solution.distance_km));
-                  const b = Math.max(0.001, Number(result.solution.baseline_km));
-                  const max = Math.max(q, b);
-                  const qw = Math.round((q / max) * 100);
-                  const bw = Math.round((b / max) * 100);
-                  return (
-                    <div style={{ display: "grid", gap: 6 }}>
-                      <div>
-                        <div style={{ fontSize: 12 }}>QUBO</div>
-                        <div style={{ background: "#e5e7eb", height: 8, borderRadius: 4 }}>
-                          <div
-                            style={{
-                              width: `${qw}%`,
-                              height: 8,
-                              borderRadius: 4,
-                              background: "#10b981",
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 12 }}>Greedy</div>
-                        <div style={{ background: "#e5e7eb", height: 8, borderRadius: 4 }}>
-                          <div
-                            style={{
-                              width: `${bw}%`,
-                              height: 8,
-                              borderRadius: 4,
-                              background: "#3b82f6",
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            </>
-          )}
-
-          {/* Optional straight Start–End diagnostic */}
-          {typeof result?.diagnostics?.depots?.start_end_km === "number" && (
-            <div style={{ marginTop: 6 }}>
-              <b>Straight Start–End:</b>{" "}
-              {result.diagnostics.depots.start_end_km.toFixed(2)} km
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={roundTrip} onChange={e => setRoundTrip(e.target.checked)} />
+                <span>Same as start (round-trip)</span>
+              </label>
+              {!roundTrip && (
+                <>
+                  <label className="text-sm grid gap-1">
+                    <span className="text-xs text-foreground/70">End Warehouse</span>
+                    <select className="rounded-xl border px-3 py-2 text-sm" value={endIdx} onChange={(e) => setEndIdx(Number(e.target.value))}>
+                      {WAREHOUSES.map((w, i) => (<option key={i} value={i}>{w.name}</option>))}
+                    </select>
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <LabeledCoord label="End Lat" value={end?.lat ?? start.lat} onChange={(n) => setEnd({ lat: n, lng: end?.lng ?? start.lng })} />
+                    <LabeledCoord label="End Lng" value={end?.lng ?? start.lng} onChange={(n) => setEnd({ lat: end?.lat ?? start.lat, lng: n })} />
+                  </div>
+                </>
+              )}
             </div>
-          )}
-
-          {/* Solver details */}
-          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
-            <b>Solver Info:</b> QUBO (minimize xᵀQx) solved via simulated annealing.
-            Terms added: L={result?.diagnostics?.qubo_terms?.linear_terms_added ?? 0}, Q=
-            {result?.diagnostics?.qubo_terms?.quadratic_terms_added ?? 0}. · Restarts=
-            {result?.diagnostics?.restarts}, Reads/Restart=
-            {result?.diagnostics?.reads_per_restart}, Best Restart=
-            {result?.diagnostics?.best_restart_idx}
           </div>
+
+          <div className="rounded-2xl border p-4 grid gap-3">
+            <h2 className="font-medium">Seller pick-ups</h2>
+            <div className="grid grid-cols-2 gap-3">
+              <LabeledNumber label="Count (5–50)" value={sellerCount} onChange={setSellerCount} min={5} max={50} />
+            </div>
+            <button onClick={generateSellers} className="w-full rounded-xl bg-foreground text-background px-4 py-2 text-sm disabled:opacity-60" disabled={loadingGen}>{loadingGen ? 'Generating…' : '🧪 Generate Seller Pickups'}</button>
+          </div>
+
+          <div className="rounded-2xl border p-4 grid gap-3">
+            <h2 className="font-medium">Solver parameters</h2>
+            <div className="grid gap-2">
+              <label className="text-sm grid gap-1">
+                <span className="text-xs text-foreground/70">Mode</span>
+                <select className="rounded-xl border px-3 py-2 text-sm" value={mode} onChange={(e)=>setMode(e.target.value as any)}>
+                  <option value="fast">fast</option><option value="balanced">balanced</option><option value="quality">quality</option>
+                </select>
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={readsAuto} onChange={(e)=>setReadsAuto(e.target.checked)} /><span>Auto reads (JIJ)</span></label>
+              {!readsAuto && (<div className="grid grid-cols-2 gap-3"><LabeledNumber label="Reads (JIJ)" value={reads} onChange={setReads} min={100} /></div>)}
+              <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={lambdaAuto} onChange={(e)=>setLambdaAuto(e.target.checked)} /><span>Auto λ (QUBO)</span></label>
+              {!lambdaAuto && (<div className="grid grid-cols-2 gap-3"><LabeledNumber label="Penalty λ (QUBO)" value={lambdaP} onChange={setLambdaP} min={1} /></div>)}
+            </div>
+            <button onClick={optimize} className="w-full rounded-xl bg-foreground text-background px-4 py-2 text-sm disabled:opacity-60 mt-2" disabled={loadingOpt || sellers.length === 0}>{loadingOpt ? 'Optimizing…' : '⚙️ Optimize'}</button>
+          </div>
+
+          <ComparePanel compareText={compareText} naive={naive} greedy={greedy} qubo={qubo} jij={jij} errQubo={errQubo} errJij={errJij} />
         </div>
+
+        {/* Map Panel */}
+        <div className="rounded-2xl border overflow-hidden min-h-[520px]">
+          <ClientOnlyMap start={start} end={roundTrip ? null : end} sellers={sellers} paths={allPaths} />
+        </div>
+      </section>
+
+      {activeTab === 'VRPTW' && (
+        <section className="rounded-2xl border p-4 grid gap-3">
+          <h2 className="font-medium">VRPTW</h2>
+          <VRPTWPanel start={start} end={roundTrip ? null : end} sellers={sellers} roundTrip={roundTrip} qubo={qubo} greedy={greedy} naive={naive} jij={jij} />
+        </section>
       )}
 
-      {/* Map */}
-      {leaflet && (points.length > 0 || result?.ok) && (
-        <div style={{ height: 460, marginTop: 14 }}>
-          <leaflet.MapContainer
-            center={mapCenter}
-            zoom={12}
-            style={{ height: "100%", width: "100%" }}
-          >
-            <leaflet.TileLayer
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution="© OpenStreetMap contributors"
-            />
+      <footer className="text-xs text-foreground/60">Tip: Set <code className="font-mono">NEXT_PUBLIC_API_BASE</code> in your env to point to your FastAPI, e.g. <code className="font-mono">https://your‑railway.app</code>.</footer>
+    </div>
+  );
+}
 
-            {/* ✅ Polyline: Start → sellers → End/Start */}
-            {routePositions.length >= 2 && (
-              <leaflet.Polyline positions={routePositions} />
-            )}
+function ComparePanel({ compareText, naive, greedy, qubo, jij, errQubo, errJij }: { compareText: string; naive: RouteResult | null; greedy: RouteResult | null; qubo: RouteResult | null; jij: RouteResult | null; errQubo: string; errJij: string; }) {
+  return (
+    <div className="rounded-2xl border p-4 grid gap-3">
+      <h2 className="font-medium">Compare</h2>
+      {compareText ? (<p className="text-sm">{compareText}</p>) : (<p className="text-sm text-foreground/70">Run optimization to see comparison vs Greedy.</p>)}
+      <div className="grid gap-2 text-sm">
+        {naive && (<div className="rounded-xl border p-2"><div className="font-medium">Naive</div><div>Distance: {naive.distance_km?.toFixed(2)} km</div><div className="flex flex-wrap gap-1 mt-1">{naive.order.map((i, k) => (<span key={`n-${k}`} className="px-2 py-0.5 rounded-full bg-black/5 border text-xs">#{i}</span>))}</div></div>)}
+        {greedy && (<div className="rounded-xl border p-2"><div className="font-medium">Greedy</div><div>Distance: {greedy.distance_km?.toFixed(2)} km</div><div className="flex flex-wrap gap-1 mt-1">{greedy.order.map((i, k) => (<span key={`g-${k}`} className="px-2 py-0.5 rounded-full bg-black/5 border text-xs">#{i}</span>))}</div></div>)}
+        {(errQubo || qubo) && (<div className="rounded-xl border p-2"><div className="font-medium">QUBO</div>{errQubo ? (<div className="text-xs text-red-600">{errQubo}</div>) : (<><div>Distance: {qubo?.distance_km?.toFixed(2)} km</div><div className="flex flex-wrap gap-1 mt-1">{qubo?.order.map((i, k) => (<span key={`q-${k}`} className="px-2 py-0.5 rounded-full bg-black/5 border text-xs">#{i}</span>))}</div></>)}</div>)}
+        {(errJij || jij) && (<div className="rounded-xl border p-2"><div className="font-medium">JIJ</div>{errJij ? (<div className="text-xs text-red-600">{errJij}</div>) : (<><div>Distance: {jij?.distance_km?.toFixed(2)} km</div><div className="flex flex-wrap gap-1 mt-1">{jij?.order.map((i, k) => (<span key={`j-${k}`} className="px-2 py-0.5 rounded-full bg-black/5 border text-xs">#{i}</span>))}</div></>)}</div>)}
+      </div>
+    </div>
+  );
+}
 
-            {/* Seller markers */}
-            {points.map((p, idx) => (
-              <leaflet.Marker key={idx} position={[p.lat, p.lng]}>
-                <leaflet.Popup>
-                  Seller #{idx} — {p.lat.toFixed(4)}, {p.lng.toFixed(4)}
-                </leaflet.Popup>
-              </leaflet.Marker>
-            ))}
+function ClientOnlyMap({ start, end, sellers, paths }: { start: LatLng; end: LatLng | null; sellers: LatLng[]; paths: { naive: [number, number][], greedy: [number, number][], qubo: [number, number][], jij: [number, number][] } }) {
+  const [ready, setReady] = useState(false);
+  const mapRef = useRef<any>(null);
+  useEffect(() => setReady(true), []);
+  const { MapContainer, TileLayer, Marker, Polyline, Popup } = Leaflet;
 
-            {/* Depots */}
-            <leaflet.Marker position={[startDepot.lat, startDepot.lng]}>
-              <leaflet.Popup>
-                Start Warehouse — {startOverride ? "Custom" : startWh}
-              </leaflet.Popup>
-            </leaflet.Marker>
-            {endWh !== "Same as Start" && (
-              <leaflet.Marker position={[endDepot.lat, endDepot.lng]}>
-                <leaflet.Popup>End Warehouse — {endWh}</leaflet.Popup>
-              </leaflet.Marker>
-            )}
-          </leaflet.MapContainer>
+  // Colors for each solver path
+  const styles: Record<string, any> = {
+    naive: { color: '#9CA3AF', weight: 3, opacity: 0.7 },     // gray
+    greedy: { color: '#3B82F6', weight: 4, opacity: 0.8 },    // blue
+    qubo: { color: '#F59E0B', weight: 4, opacity: 0.9 },      // amber
+    jij: { color: '#8B5CF6', weight: 5, opacity: 0.95 },      // violet
+  };
+
+  // Fit bounds whenever points or paths change
+  useEffect(() => {
+    if (!ready || !mapRef.current || !L) return;
+    const pts: [number, number][] = [];
+    pts.push([start.lat, start.lng]);
+    if (end) pts.push([end.lat, end.lng]);
+    sellers.forEach(s => pts.push([s.lat, s.lng]));
+    [paths.naive, paths.greedy, paths.qubo, paths.jij].forEach(poly => poly.forEach(p => pts.push(p)));
+    if (pts.length >= 2) {
+      const bounds = L.latLngBounds(pts.map(p => L.latLng(p[0], p[1])));
+      mapRef.current.fitBounds(bounds, { padding: [32, 32] });
+    }
+  }, [ready, start, end, sellers, paths]);
+
+  if (!ready) return <div className="h-[520px] w-full grid place-items-center text-sm">Loading map…</div>;
+  const center: [number, number] = [start.lat, start.lng];
+
+  return (
+    <MapContainer center={center} zoom={12} style={{ height: 520, width: '100%' }} scrollWheelZoom whenCreated={(map) => (mapRef.current = map)}>
+      <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+
+      {/* Start marker */}
+      <Marker position={center}><Popup><div className="text-sm"><div className="font-medium">Start Warehouse</div><div className="text-xs">{start.lat.toFixed(4)}, {start.lng.toFixed(4)}</div></div></Popup></Marker>
+
+      {/* End marker (if any) */}
+      {end && (<Marker position={[end.lat, end.lng]}><Popup><div className="text-sm"><div className="font-medium">End Warehouse</div><div className="text-xs">{end.lat.toFixed(4)}, {end.lng.toFixed(4)}</div></div></Popup></Marker>)}
+
+      {/* Seller markers */}
+      {sellers.map((p, i) => (<Marker key={i} position={[p.lat, p.lng]}><Popup><div className="text-sm"><div className="font-medium">Seller #{i}</div><div className="text-xs">{p.lat.toFixed(4)}, {p.lng.toFixed(4)}</div></div></Popup></Marker>))}
+
+      {/* Draw all available polylines with distinct styles */}
+      {paths.naive.length >= 2 && (<Polyline positions={paths.naive as any} pathOptions={styles.naive} />)}
+      {paths.greedy.length >= 2 && (<Polyline positions={paths.greedy as any} pathOptions={styles.greedy} />)}
+      {paths.qubo.length >= 2 && (<Polyline positions={paths.qubo as any} pathOptions={styles.qubo} />)}
+      {paths.jij.length >= 2 && (<Polyline positions={paths.jij as any} pathOptions={styles.jij} />)}
+
+      {/* Legend */}
+      <div className="leaflet-bottom leaflet-right m-2 p-2 rounded-lg bg-white/90 shadow text-[11px] leading-4">
+        <div className="flex items-center gap-2"><span className="inline-block w-3 h-1" style={{ background: styles.jij.color }} /> JIJ</div>
+        <div className="flex items-center gap-2"><span className="inline-block w-3 h-1" style={{ background: styles.qubo.color }} /> QUBO</div>
+        <div className="flex items-center gap-2"><span className="inline-block w-3 h-1" style={{ background: styles.greedy.color }} /> Greedy</div>
+        <div className="flex items-center gap-2"><span className="inline-block w-3 h-1" style={{ background: styles.naive.color }} /> Naive</div>
+      </div>
+    </MapContainer>
+  );
+}
+
+// --- VRPTW Panel ---
+function VRPTWPanel({ start, end, sellers, roundTrip, qubo, greedy, naive, jij }: { start: LatLng; end: LatLng | null; sellers: LatLng[]; roundTrip: boolean; qubo: RouteResult | null; greedy: RouteResult | null; naive: RouteResult | null; jij: RouteResult | null; }) {
+  // Time & speed
+  const [shiftStartStr, setShiftStartStr] = useState<string>(toHHMM(9 * 60));
+  const [shiftEndStr, setShiftEndStr] = useState<string>(toHHMM(18 * 60));
+  const [placementMin, setPlacementMin] = useState<number>(0); // vehicle placement time at start depot
+  const [speed, setSpeed] = useState(25);
+
+  // Vehicles & service
+  const [vehCount, setVehCount] = useState(2);
+  const [serviceMin, setServiceMin] = useState(5); // on-site handling time per stop
+  const [hardTW, setHardTW] = useState(false);
+
+  // Seller availability & TW
+  const [avail, setAvail] = useState<boolean[]>(() => sellers.map(() => true));
+  const [twStart, setTwStart] = useState<string[]>(() => sellers.map(() => ''));
+  const [twEnd, setTwEnd] = useState<string[]>(() => sellers.map(() => ''));
+
+  useEffect(() => { setAvail(sellers.map(() => true)); setTwStart(sellers.map(() => '')); setTwEnd(sellers.map(() => '')); }, [sellers]);
+
+  // Route source
+  const [routeSource, setRouteSource] = useState<'auto' | 'best' | 'greedy' | 'naive'>('auto');
+
+  // Fuel calc
+  const [kmpl, setKmpl] = useState<number>(15); // vehicle efficiency (km per litre)
+
+  const [loading, setLoading] = useState(false);
+  const [plans, setPlans] = useState<any>(null);
+  const [error, setError] = useState<string>('');
+  const [fuelSavings, setFuelSavings] = useState<{ litres: number; kmSaved: number } | null>(null);
+
+  const chooseOrder = (): number[] | null => {
+    if (routeSource === 'greedy') return greedy?.order ?? null;
+    if (routeSource === 'naive') return naive?.order ?? null;
+    if (routeSource === 'best') {
+      const candidates = [jij, qubo, greedy].filter(Boolean) as RouteResult[];
+      if (!candidates.length) return null;
+      const best = candidates.reduce((a, b) => (a.distance_km! < b.distance_km! ? a : b));
+      return best.order;
+    }
+    return null; // auto (backend heuristic)
+  };
+
+  const naiveVRPTWkm = (order: number[] | null): number => {
+    const idxs = (order && order.length) ? order.slice() : sellers.map((_, i) => i);
+    // Split sellers evenly by vehicle count
+    const chunks: number[][] = Array.from({ length: vehCount }, () => []);
+    idxs.forEach((id, i) => chunks[i % vehCount].push(id));
+    // Compute distance per vehicle path: start -> chunk -> (start or end)
+    let total = 0;
+    for (const ch of chunks) {
+      let cur = start; for (const id of ch) { total += haversine(cur, sellers[id]); cur = sellers[id]; }
+      if (roundTrip) total += haversine(cur, start); else if (end) total += haversine(cur, end);
+    }
+    return total;
+  };
+
+  const solveVRPTW = async () => {
+    setLoading(true); setError(''); setFuelSavings(null);
+    try {
+      const depot = { lat: start.lat, lng: start.lng };
+      const orderHint = chooseOrder();
+      const seq = orderHint ?? sellers.map((_, i) => i);
+      const sellerObjs = seq.map((i) => ({
+        id: i,
+        lat: sellers[i].lat,
+        lng: sellers[i].lng,
+        service_min: serviceMin,
+        available: avail[i],
+        tw_start: fromHHMM(twStart[i]),
+        tw_end: fromHHMM(twEnd[i]),
+      }));
+
+      const sStart = (fromHHMM(shiftStartStr) ?? 9 * 60) + placementMin;
+      const sEnd = fromHHMM(shiftEndStr) ?? 18 * 60;
+
+      const vehicles = Array.from({ length: vehCount }, (_, i) => ({
+        id: i,
+        start: depot,
+        end: end ? { lat: end.lat, lng: end.lng } : null,
+        shift_start: sStart,
+        shift_end: sEnd,
+        speed_kmph: speed,
+        active: true,
+      }));
+
+      const body = { depot, sellers: sellerObjs, vehicles, round_trip: roundTrip, hard_time_windows: hardTW };
+
+      const r = await fetch(`${API_BASE}/optimize/vrptw`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) { setError(`VRPTW HTTP ${r.status}`); setPlans(null); }
+      else {
+        const data = await r.json(); setPlans(data);
+        // Fuel savings vs naive VRPTW
+        const naiveKm = naiveVRPTWkm(orderHint);
+        const kmSaved = Math.max(0, naiveKm - (data.total_km || 0));
+        const litres = kmpl > 0 ? kmSaved / kmpl : 0;
+        setFuelSavings({ litres, kmSaved });
+      }
+    } catch (e: any) {
+      setError('VRPTW request failed'); setPlans(null);
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <LabeledNumber label="Vehicles" value={vehCount} onChange={setVehCount} min={1} />
+        <LabeledNumber label="Vehicle efficiency (km/l)" value={kmpl} onChange={setKmpl} min={1} />
+        <LabeledNumber label="Speed (km/h)" value={speed} onChange={setSpeed} min={5} />
+        <LabeledTime label="Shift start" value={shiftStartStr} onChange={setShiftStartStr} />
+        <LabeledTime label="Shift end" value={shiftEndStr} onChange={setShiftEndStr} />
+        <LabeledNumber label="Placement at depot (min)" value={placementMin} onChange={setPlacementMin} min={0} />
+        <LabeledNumber label="Service mins per stop" value={serviceMin} onChange={setServiceMin} min={1} />
+        <label className="inline-flex items-center gap-2 text-sm md:col-span-3">
+          <input type="checkbox" checked={hardTW} onChange={(e)=>setHardTW(e.target.checked)} />
+          <span>Hard time windows (rejects late arrivals)</span>
+        </label>
+        <label className="text-sm grid gap-1 md:col-span-3">
+          <span className="text-xs text-foreground/70">Route source for VRPTW</span>
+          <select className="rounded-xl border px-3 py-2 text-sm" value={routeSource} onChange={(e)=>setRouteSource(e.target.value as any)}>
+            <option value="auto">Auto (backend heuristic)</option>
+            <option value="best">Best of JIJ/QUBO/Greedy</option>
+            <option value="greedy">Greedy</option>
+            <option value="naive">Naive</option>
+          </select>
+        </label>
+        <p className="text-[11px] text-foreground/60 md:col-span-3">“Service mins per stop” means on‑site handling time at each seller (loading/unloading). Availability and time windows are applied per seller below.</p>
+      </div>
+
+      {/* Seller availability + time windows */}
+      <details className="rounded-xl border p-3 open:shadow-sm">
+        <summary className="cursor-pointer text-sm font-medium">Seller availability & time windows</summary>
+        <div className="grid gap-2 mt-2">
+          {sellers.map((s, i) => (
+            <div key={i} className="grid grid-cols-2 md:grid-cols-6 gap-2 items-center">
+              <div className="text-xs opacity-70">Seller #{i}</div>
+              <label className="inline-flex items-center gap-2 text-xs"><input type="checkbox" checked={avail[i]} onChange={(e)=>setAvail(a=>{ const c=[...a]; c[i]=e.target.checked; return c; })} /><span>Available</span></label>
+              <LabeledTime label="TW start" value={twStart[i]} onChange={(v)=>setTwStart(a=>{ const c=[...a]; c[i]=v; return c; })} />
+              <LabeledTime label="TW end" value={twEnd[i]} onChange={(v)=>setTwEnd(a=>{ const c=[...a]; c[i]=v; return c; })} />
+              <div className="text-[11px] col-span-2 md:col-span-2 text-foreground/60">{s.lat.toFixed(4)}, {s.lng.toFixed(4)}</div>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <button onClick={solveVRPTW} className="rounded-xl bg-foreground text-background px-4 py-2 text-sm w-full md:w-max disabled:opacity-60" disabled={loading || sellers.length===0}>{loading ? 'Solving…' : '🗺️ Solve VRPTW'}</button>
+      {error && <div className="text-xs text-red-600">{error}</div>}
+
+      {plans && (
+        <div className="grid gap-2 text-sm">
+          <div className="text-xs opacity-70">Total: {plans.total_km?.toFixed ? plans.total_km.toFixed(2) : plans.total_km} km, {plans.total_time_min} min</div>
+          {fuelSavings && (
+            <div className="text-xs">Fuel savings vs naive VRPTW: <b>{fuelSavings.kmSaved.toFixed(2)} km</b> ≈ <b>{fuelSavings.litres.toFixed(2)} L</b> @ {kmpl} km/L</div>
+          )}
+          {plans.plans?.map((p: any) => (
+            <div key={p.vehicle_id} className="rounded-xl border p-2">
+              <div className="font-medium">Vehicle #{p.vehicle_id}</div>
+              <div className="text-xs opacity-70">{p.total_km} km • {p.total_time_min} min • lateness {p.lateness_min} • wait {p.wait_min} • overrun {p.shift_overrun_min}</div>
+              <div className="flex flex-wrap gap-1 mt-1">{p.route.map((st: any, idx: number) => (<span key={idx} className="px-2 py-0.5 rounded-full bg-black/5 border text-xs">seller {st.seller_id}</span>))}</div>
+            </div>
+          ))}
+          {plans.unassigned_sellers?.length > 0 && (<div className="text-xs">Unassigned: {plans.unassigned_sellers.join(', ')}</div>)}
         </div>
       )}
     </div>

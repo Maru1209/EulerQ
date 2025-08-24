@@ -1,0 +1,34 @@
+"use client";
+import { MapContainer, TileLayer, Polyline } from "react-leaflet";
+
+export function RouteMap({
+  jij, qubo, greedy, showComparison,
+}: {
+  jij:    { polyline: [number, number][], label: string };
+  qubo:   { polyline: [number, number][], label: string };
+  greedy: { polyline: [number, number][], label: string };
+  showComparison: boolean;
+}) {
+  return (
+    <div className="relative">
+      <MapContainer center={[12.93, 77.67]} zoom={12} style={{ height: 520, borderRadius: 12 }}>
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        {/* Primary route: JIJ (Quantum-inspired) */}
+        <Polyline positions={jij.polyline} pathOptions={{ color: "#2563eb", weight: 5 }} />
+        {showComparison && (
+          <>
+            <Polyline positions={qubo.polyline}   pathOptions={{ color: "#f59e0b", weight: 4, dashArray: "8 6" }} />
+            <Polyline positions={greedy.polyline} pathOptions={{ color: "#ef4444", weight: 3, dashArray: "4 8" }} />
+          </>
+        )}
+      </MapContainer>
+
+      {/* Legend */}
+      <div className="absolute bottom-3 left-3 bg-white/90 px-3 py-2 rounded-md shadow space-y-1 text-sm">
+        <div><span style={{display:'inline-block',width:14,height:3,background:'#2563eb',marginRight:8}}/>JIJ <em>(Quantum-inspired)</em></div>
+        <div><span style={{display:'inline-block',width:14,height:3,background:'#f59e0b',marginRight:8,borderBottom:'2px dashed #f59e0b'}}/>QUBO</div>
+        <div><span style={{display:'inline-block',width:14,height:3,background:'#ef4444',marginRight:8,borderBottom:'2px dotted #ef4444'}}/>Greedy</div>
+      </div>
+    </div>
+  );
+}
