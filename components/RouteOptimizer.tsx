@@ -1,12 +1,13 @@
 // components/RouteOptimizer.tsx
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Polyline, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 type LatLng = { lat: number; lng: number };
+type LatLngTuple = [number, number];
 
 /* ----------------- API shapes ----------------- */
 type SolveResponse = {
@@ -27,7 +28,7 @@ type JIJWire = {
   route: number[];
   energy: number;
   distance_km?: number | null;
-  polyline?: [number, number][] | null;
+  polyline?: LatLngTuple[] | null;
   solver?: string;
 };
 
@@ -58,6 +59,7 @@ const haversine = (a: LatLng, b: LatLng) => {
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 };
+
 function jitterAround(center: LatLng, kmRadius: number): LatLng {
   const r = kmRadius * Math.sqrt(Math.random());
   const theta = 2 * Math.PI * Math.random();
@@ -65,16 +67,19 @@ function jitterAround(center: LatLng, kmRadius: number): LatLng {
   const dLng = r / (111 * Math.cos(toRad(center.lat)));
   return { lat: center.lat + dLat * Math.sin(theta), lng: center.lng + dLng * Math.cos(theta) };
 }
+
 function buildDistanceMatrix(points: LatLng[]): number[][] {
   const N = points.length;
   const D: number[][] = Array.from({ length: N }, () => Array(N).fill(0));
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) D[i][j] = i === j ? 0 : haversine(points[i], points[j]);
   return D;
 }
+
 function nearlyEqual(a: number, b: number, eps = 1e-9) {
   return Math.abs(a - b) <= eps;
 }
-function ensureClosed(path: [number, number][], roundTrip: boolean) {
+
+function ensureClosed(path: LatLngTuple[], roundTrip: boolean): LatLngTuple[] {
   if (!roundTrip || path.length < 2) return path;
   const [aLat, aLng] = path[0];
   const [zLat, zLng] = path[path.length - 1];
@@ -83,12 +88,13 @@ function ensureClosed(path: [number, number][], roundTrip: boolean) {
   }
   return path;
 }
+
 function orderToPolyline(
   order: number[],
   cities: LatLng[],
   opts: { roundTrip: boolean; start?: LatLng; end?: LatLng }
-): [number, number][] {
-  const pts: [number, number][] = [];
+): LatLngTuple[] {
+  const pts: LatLngTuple[] = [];
   if (opts.start) pts.push([opts.start.lat, opts.start.lng]);
   for (const idx of order) {
     const c = cities[idx];
@@ -105,6 +111,7 @@ function orderToPolyline(
   }
   return ensureClosed(pts, opts.roundTrip);
 }
+
 function distanceForOrderIncludingDepots(
   order: number[],
   cities: LatLng[],
@@ -121,17 +128,17 @@ function distanceForOrderIncludingDepots(
                   : haversine(cities[order[order.length - 1]], end);
   return km;
 }
+
 function fmtKm(x?: number | null) {
   return x != null ? x.toFixed(2) + ' km' : '—';
 }
 function fmtPct(x?: number | null) {
-  // show "−X.X%" for savings, "+X.X%" for worse
   if (x == null) return '—';
   return (x >= 0 ? '−' : '+') + Math.abs(x).toFixed(1) + '%';
 }
 function savingsKmPct(candidate?: number | null, baseline?: number | null) {
   if (candidate == null || baseline == null || baseline <= 0) return { km: null, pct: null };
-  const km = baseline - candidate;                 // + = saved km
+  const km = baseline - candidate;
   const pct = (km / baseline) * 100;
   return { km, pct };
 }
@@ -172,10 +179,10 @@ export default function RouteOptimizer() {
   const [error, setError] = useState<string | null>(null);
 
   // Results
-  const [jij, setJij] = useState<{ order: number[]; km: number | null; energy: number | null; polyline: [number, number][] } | null>(null);
-  const [qubo, setQubo] = useState<{ order: number[]; km: number | null; polyline: [number, number][] } | null>(null);
-  const [greedy, setGreedy] = useState<{ order: number[]; km: number | null; polyline: [number, number][] } | null>(null);
-  const [naive, setNaive] = useState<{ order: number[]; km: number | null; polyline: [number, number][] } | null>(null);
+  const [jij, setJij] = useState<{ order: number[]; km: number | null; energy: number | null; polyline: LatLngTuple[] } | null>(null);
+  const [qubo, setQubo] = useState<{ order: number[]; km: number | null; polyline: LatLngTuple[] } | null>(null);
+  const [greedy, setGreedy] = useState<{ order: number[]; km: number | null; polyline: LatLngTuple[] } | null>(null);
+  const [naive, setNaive] = useState<{ order: number[]; km: number | null; polyline: LatLngTuple[] } | null>(null);
 
   // map size fix
   const [mapReady, setMapReady] = useState(false);
@@ -293,10 +300,11 @@ export default function RouteOptimizer() {
       setNaive({ order: naiveOrder, km: naiveKmU, polyline: ensureClosed(naivePolyline, rt) });
 
       // ----- Classical result (QUBO + Greedy orders)
-      if (clRes?.ok === false) throw new Error(clRes?.message || 'Classical solver error');
+      if ((clRes as SolveResponse)?.ok === false) throw new Error((clRes as SolveResponse)?.message || 'Classical solver error');
 
-      const quboOrder: number[]   = clRes?.solution?.order ?? [];
-      const greedyOrder: number[] = clRes?.solution?.baseline_order ?? [];
+      const cl = clRes as SolveResponse;
+      const quboOrder: number[]   = cl?.solution?.order ?? [];
+      const greedyOrder: number[] = cl?.solution?.baseline_order ?? [];
 
       // FE unified totals for QUBO & Greedy (ignore backend distances for comparisons)
       const quboKmU   = quboOrder.length   ? distanceForOrderIncludingDepots(quboOrder,   sellers, start, effectiveEnd, rt) : null;
@@ -311,7 +319,7 @@ export default function RouteOptimizer() {
       // ----- JIJ normalize + FE unified total
       const j: JIJWire = jijRes || {};
       const jijOrder: number[] = Array.isArray(j.route) ? j.route : [];
-      const jijPolyline: [number, number][] =
+      const jijPolyline: LatLngTuple[] =
         (Array.isArray(j.polyline) ? j.polyline! : null) ??
         orderToPolyline(jijOrder, sellers, { roundTrip: rt, start, end: sameAsStart ? undefined : effectiveEnd });
 
@@ -344,7 +352,7 @@ export default function RouteOptimizer() {
   const quboVsGreedy = savingsKmPct(qubo?.km ?? null, greedyKm);
 
   // Map center
-  const mapCenter: [number, number] = [start.lat, start.lng];
+  const mapCenter: LatLngTuple = [start.lat, start.lng];
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
@@ -618,17 +626,17 @@ export default function RouteOptimizer() {
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
             {/* Lines: JIJ primary, optional QUBO + Greedy + Naive */}
-            {jij?.polyline?.length! >= 2 && (
-              <Polyline positions={jij!.polyline} pathOptions={{ color: '#2563eb', weight: 5 }} />
+            {jij?.polyline && jij.polyline.length >= 2 && (
+              <Polyline positions={jij.polyline} pathOptions={{ color: '#2563eb', weight: 5 }} />
             )}
-            {showCompare && qubo?.polyline?.length! >= 2 && (
-              <Polyline positions={qubo!.polyline} pathOptions={{ color: '#f59e0b', weight: 4, dashArray: '8 6' }} />
+            {showCompare && qubo?.polyline && qubo.polyline.length >= 2 && (
+              <Polyline positions={qubo.polyline} pathOptions={{ color: '#f59e0b', weight: 4, dashArray: '8 6' }} />
             )}
-            {showCompare && greedy?.polyline?.length! >= 2 && (
-              <Polyline positions={greedy!.polyline} pathOptions={{ color: '#ef4444', weight: 3, dashArray: '4 8' }} />
+            {showCompare && greedy?.polyline && greedy.polyline.length >= 2 && (
+              <Polyline positions={greedy.polyline} pathOptions={{ color: '#ef4444', weight: 3, dashArray: '4 8' }} />
             )}
-            {showNaive && naive?.polyline?.length! >= 2 && (
-              <Polyline positions={naive!.polyline} pathOptions={{ color: '#64748b', weight: 2, dashArray: '2 8', opacity: 0.8 }} />
+            {showNaive && naive?.polyline && naive.polyline.length >= 2 && (
+              <Polyline positions={naive.polyline} pathOptions={{ color: '#64748b', weight: 2, dashArray: '2 8', opacity: 0.8 }} />
             )}
 
             {/* Sellers */}
