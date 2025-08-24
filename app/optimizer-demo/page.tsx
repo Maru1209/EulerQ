@@ -364,7 +364,7 @@ function ClientOnlyMap({ start, end, sellers, paths }: { start: LatLng; end: Lat
   const center: [number, number] = [start.lat, start.lng];
 
   return (
-    <MapContainer center={center} zoom={12} style={{ height: 520, width: '100%' }}  scrollWheelZoom={true} whenReady={(e) => (mapRef.current = e.target)}>
+    <MapContainer center={center} zoom={12} style={{ height: 520, width: '100%' }}  scrollWheelZoom={true} ref={(m: any) => { if (m) mapRef.current = m; }}>
       <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
       {/* Start marker */}
