@@ -84,12 +84,10 @@ export default function Home() {
             <a href="#pilot" className="hover:text-white">Pilot</a>
             <a href="#contact" className="hover:text-white">Contact</a>
 
-            {/* Links to all pages */}
-            <Link href="/optimizer" className="hover:text-white">Optimizer</Link>
-            <Link href="/optimizer-demo" className="hover:text-white">Optimizer Demo</Link>
-            <Link href="/vrptw-demo" className="hover:text-white">VRPTW Demo</Link>
-            <Link href="/solver" className="hover:text-white">Solver</Link>
-            <Link href="/demo" className="hover:text-white">Demo</Link>
+            {/* ✅ Only show Optimizer Demo */}
+            <Link href="/optimizer-demo" className="hover:text-white">
+              Optimizer Demo
+            </Link>
           </div>
 
           <a
