@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 
-// Lazy‑load react‑leaflet only on client to avoid SSR issues
+// Lazy-load react-leaflet only on client to avoid SSR issues
 const Leaflet = {
   MapContainer: dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false }),
   TileLayer: dynamic(() => import('react-leaflet').then(m => m.TileLayer), { ssr: false }),
@@ -85,7 +85,7 @@ const fromHHMM = (s: string | null | undefined) => {
   if (!s) return null; const [h, m] = s.split(':').map(Number); if (Number.isNaN(h)) return null; return h*60 + (m || 0);
 };
 
-// --- UI helpers (module‑level so all components can use)
+// --- UI helpers (module-level so all components can use)
 function LabeledNumber({ label, value, onChange, step = 1, min, max }: { label: string; value: number; onChange: (n: number) => void; step?: number; min?: number; max?: number }) {
   return (
     <label className="text-sm grid gap-1">
@@ -312,7 +312,7 @@ export default function OptimizerDemoPage() {
         </section>
       )}
 
-      <footer className="text-xs text-foreground/60">Tip: Set <code className="font-mono">NEXT_PUBLIC_API_BASE</code> in your env to point to your FastAPI, e.g. <code className="font-mono">https://your‑railway.app</code>.</footer>
+      <footer className="text-xs text-foreground/60">Tip: Set <code className="font-mono">NEXT_PUBLIC_API_BASE</code> in your env to point to your FastAPI, e.g. <code className="font-mono">https://your-railway.app</code>.</footer>
     </div>
   );
 }
@@ -519,7 +519,7 @@ function VRPTWPanel({ start, end, sellers, roundTrip, qubo, greedy, naive, jij }
             <option value="naive">Naive</option>
           </select>
         </label>
-        <p className="text-[11px] text-foreground/60 md:col-span-3">“Service mins per stop” means on‑site handling time at each seller (loading/unloading). Availability and time windows are applied per seller below.</p>
+        <p className="text-[11px] text-foreground/60 md:col-span-3">“Service mins per stop” means on-site handling time at each seller (loading/unloading). Availability and time windows are applied per seller below.</p>
       </div>
 
       {/* Seller availability + time windows */}
